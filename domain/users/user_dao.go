@@ -3,37 +3,135 @@ package users
 import (
 	"fmt"
 
+	"github.com/cookem1/bookstore_users-api/datasources/users_db"
 	"github.com/cookem1/bookstore_users-api/utils/errors"
+	mysql_utils "github.com/cookem1/bookstore_users-api/utils/mysql"
 )
 
-var (
-	userDB = make(map[int64]*User)
+const (
+	indexUniqueEmail      = "email_UNIQUE"
+	errorNoRows           = "sql: no rows in result set"
+	queryInsertUser       = "INSERT INTO users (first_name, last_name, email, date_created, status, password) VALUES (?, ?, ?, ?, ?, ?);"
+	queryGetUser          = "SELECT id, first_name, last_name, email, date_created, status FROM users WHERE id=?; "
+	queryUpdateUser       = "UPDATE users SET first_name=?, last_name=?, email=? WHERE id=?; "
+	queryDeleteUser       = "DELETE FROM users WHERE id=?; "
+	queryFindUserByStatus = "SELECT id, first_name, last_name, email, date_created, status FROM users where status=?; "
 )
 
 func (user *User) Get() *errors.RestErr {
-	result := userDB[user.Id]
-	if result == nil {
-		return errors.NewNotFoundError(fmt.Sprintf("User %d not found", user.Id))
+	if err := users_db.Client.Ping(); err != nil {
+		panic(err)
 	}
 
-	user.Id = result.Id
-	user.DateCreated = result.DateCreated
-	user.FirstName = result.FirstName
-	user.LastName = result.LastName
-	user.Email = result.Email
+	stmt, err := users_db.Client.Prepare(queryGetUser)
+
+	if err != nil {
+		return errors.NewInternalServerError(err.Error())
+	}
+
+	defer stmt.Close()
+
+	result := stmt.QueryRow(user.Id)
+
+	if getErr := result.Scan(&user.Id, &user.FirstName, &user.LastName, &user.Email, &user.DateCreated, &user.Status); getErr != nil {
+		fmt.Println(getErr)
+		return mysql_utils.ParseError(getErr)
+	}
 
 	return nil
 }
 
 func (user *User) Save() *errors.RestErr {
-	current := userDB[user.Id]
-	if current != nil {
-		if current.Email == user.Email {
-			return errors.NewBadRequestError(fmt.Sprintf("Email address %s is already registered", user.Email))
-		}
-		return errors.NewBadRequestError(fmt.Sprintf("Users %d already exists", user.Id))
+
+	stmt, err := users_db.Client.Prepare(queryInsertUser)
+
+	if err != nil {
+		return errors.NewInternalServerError(err.Error())
 	}
 
-	userDB[user.Id] = user
+	defer stmt.Close()
+
+	insertResult, saveErr := stmt.Exec(user.FirstName, user.LastName, user.Email, user.DateCreated, user.Status, user.Password)
+	if saveErr != nil {
+		return mysql_utils.ParseError(saveErr)
+	}
+
+	userID, err := insertResult.LastInsertId()
+	if err != nil {
+		return mysql_utils.ParseError(err)
+	}
+
+	user.Id = userID
 	return nil
+}
+
+func (user *User) Update() *errors.RestErr {
+
+	stmt, err := users_db.Client.Prepare(queryUpdateUser)
+
+	if err != nil {
+		return errors.NewInternalServerError(err.Error())
+	}
+
+	defer stmt.Close()
+
+	_, updateErr := stmt.Exec(user.FirstName, user.LastName, user.Email, user.Id)
+
+	if updateErr != nil {
+		return mysql_utils.ParseError(updateErr)
+	}
+
+	return nil
+
+}
+
+func (user *User) Delete() *errors.RestErr {
+
+	stmt, err := users_db.Client.Prepare(queryDeleteUser)
+
+	if err != nil {
+		return errors.NewInternalServerError(err.Error())
+	}
+
+	defer stmt.Close()
+
+	if _, delErr := stmt.Exec(user.Id); delErr != nil {
+		return mysql_utils.ParseError(delErr)
+	}
+	return nil
+}
+
+func (user User) FindByStatus(status string) ([]User, *errors.RestErr) {
+
+	stmt, err := users_db.Client.Prepare(queryFindUserByStatus)
+
+	if err != nil {
+		return nil, errors.NewInternalServerError(err.Error())
+	}
+
+	defer stmt.Close()
+
+	rows, err := stmt.Query(status)
+
+	if err != nil {
+		return nil, errors.NewInternalServerError(err.Error())
+	}
+
+	defer rows.Close()
+
+	results := make([]User, 0)
+
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.Id, &user.FirstName, &user.LastName, &user.Email, &user.DateCreated, &user.Status); err != nil {
+			return nil, mysql_utils.ParseError(err)
+		}
+
+		results = append(results, user)
+	}
+	if len(results) == 0 {
+		return nil, errors.NewNotFoundError(fmt.Sprintf("no users matching status %s", status))
+	}
+
+	return results, nil
 }
