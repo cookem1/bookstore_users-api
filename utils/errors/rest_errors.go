@@ -1,6 +1,10 @@
 package errors
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/pkg/errors"
+)
 
 type RestErr struct {
 	Message string `json:"message"`
@@ -22,6 +26,10 @@ func NewNotFoundError(message string) *RestErr {
 		Status:  http.StatusNotFound,
 		Error:   "not_found",
 	}
+}
+
+func NewError(msg string) error {
+	return errors.New(msg)
 }
 
 func NewInternalServerError(message string) *RestErr {
